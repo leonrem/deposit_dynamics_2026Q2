@@ -1,0 +1,699 @@
+---
+title: "Deposit Dynamics at the Large Regionals Coming Out of the Last Cutting Cycle"
+author: "Leonid Rempel"
+date: ""
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: false
+    fig_caption: false
+geometry: margin=0.6in
+fontsize: 10pt
+colorlinks: true
+linkcolor: blue
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{float}
+  - \usepackage{colortbl}
+  - \usepackage{arydshln}
+  - \setlength{\arrayrulewidth}{0.55pt}
+  - \setlength{\dashlinedash}{0.55pt}
+  - \setlength{\dashlinegap}{1.8pt}
+  - \setmainfont{texgyreheros}[Extension=.otf,UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic]
+  - \newfontfamily\serifface{lmroman10}[Extension=.otf,UprightFont=*-regular,BoldFont=*-bold,ItalicFont=*-italic,BoldItalicFont=*-bolditalic]
+  - \usepackage{etoolbox}
+  - \AtBeginEnvironment{tabular}{\serifface}
+  - \AtBeginEnvironment{longtable}{\serifface}
+  - \usepackage{sectsty}
+  - \allsectionsfont{\serifface\bfseries}
+  - \usepackage{caption}
+  - \DeclareCaptionFont{serifcap}{\serifface\small}
+  - \captionsetup{font=serifcap,labelfont=bf,textfont=bf,justification=raggedright,singlelinecheck=false}
+  - \floatplacement{figure}{H}
+  - \pagenumbering{arabic}
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-4em}
+  - \pretitle{\begin{flushleft}\fontsize{10pt}{12pt}\selectfont\bfseries}
+  - \posttitle{\end{flushleft}\vspace{-0.6em}}
+  - \preauthor{\begin{flushleft}\fontsize{10pt}{12pt}\selectfont}
+  - \postauthor{\end{flushleft}\vspace{-0.9em}}
+  - \predate{}
+  - \postdate{}
+params:
+  up_start: "2021-12-31"
+  up_end: "2024-09-30"
+  down_end: "2026-06-30"
+  shock_bp: 25
+  sod_year_structure: 2022
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.align = "center", dpi = 300)
+library(dplyr)
+# Project root: walk up from the knit directory until the folder that holds R/run_all.R, so the memo renders from any working directory
+find_root <- function(start) {
+  d <- normalizePath(start, mustWork = FALSE)
+  while (!file.exists(file.path(d, "R", "run_all.R"))) { up <- dirname(d); if (up == d) stop("Run from inside the project folder (the one with R/run_all.R)"); d <- up }
+  d
+}
+root <- find_root(knitr::opts_knit$get("output.dir") %||% getwd())
+p <- function(...) file.path(root, ...)
+up_start <- as.Date(params$up_start); up_end <- as.Date(params$up_end); down_end <- as.Date(params$down_end)
+shock <- params$shock_bp; sod_year_structure <- params$sod_year_structure
+source(p("R/study_metrics.R"), local = knitr::knit_global())
+
+# Table 1 covers the ten focus regionals plus five large regionals near or just above the $100B line (Zions, Pinnacle, Western
+# Alliance, First Horizon, East West). The shared metrics file scores the ten only (report and deck still use it); the memo
+# re-scores across all fifteen.
+MEMO_TICKERS <- c(FOCUS_TICKERS, "ZION", "PNFP", "WAL", "FHN", "EWBC")
+# Funding need uses loans / deposits (ltd, from study_metrics.R); securities are left to a separate net-interest-income look
+pressure_inputs <- pressure_inputs |>
+  left_join(at(down_end) |> select(ticker, brok = brokered_share), by = "ticker")
+# Funding gap = loan growth minus deposit growth from the first cut (2024Q3) to 2026Q2, pro forma (R/build_availability_series.R). It replaces YTD
+# interest-bearing deposit growth in the funding-need pillar: deposits that outgrew loans mean less replacement funding is needed.
+av_all <- readr::read_csv(p("data/analysis/availability_by_bank.csv"), show_col_types = FALSE)
+pressure_inputs <- pressure_inputs |> left_join(av_all |> transmute(ticker, gap = loan_g_since_first_cut - dep_g_since_first_cut), by = "ticker")
+# Brokered deposits (domestic brokered / domestic deposits) join the deposit-base sensitivity pillar: higher = more pressure
+PRESSURE_INDICATORS <- dplyr::bind_rows(PRESSURE_INDICATORS, tibble::tibble(var = "brok", label = "Brokered deposits (%)", pillar = "A", sign = 1))
+# The through-cycle beta is split into its two cycles, each scored separately (higher = more rate-sensitive = more pressure), so beta carries
+# two of the six deposit-base indicators.
+PRESSURE_INDICATORS <- PRESSURE_INDICATORS |> dplyr::filter(!var %in% c("beta", "ib_dep_g")) |>
+  dplyr::bind_rows(tibble::tibble(var = c("up_total", "down_total", "gap"), label = c("Up-cycle beta", "Down-cycle beta", "Loan growth less deposit growth (pts)"),
+                                  pillar = c("A", "A", "B"), sign = 1))
+
+# Year-to-date growth in loans + securities (pro forma), same sample as the other YTD panels; panel 3 and the deposit-side bullet use it
+ls_ytd <- pf_at(ytd_start) |> transmute(ticker, a0 = loans + securities_htm + securities_afs) |>
+  inner_join(pf_at(down_end) |> transmute(ticker, a1 = loans + securities_htm + securities_afs), by = "ticker") |> mutate(ls_g = 100 * (a1 / a0 - 1))
+ytd_ls <- inner_join(ytd_ok, ls_ytd |> select(ticker, ls_g), by = "ticker")
+r_lsg <- cor(ytd_ls$ls_g, ytd_ls$d_cost_ytd_bp, use = "complete.obs")
+
+# SCORE: each indicator becomes a percentile rank among the fifteen banks (100 = most pressure; signed so low NIB counts as pressure).
+# Percentiles are averaged within each pillar, and the score is the average of the two pillars (50/50) on a 0-100 scale.
+# (Earlier alternative, not used: average of signed squared z-scores, sign(z) * z^2, which punishes extreme weaknesses more;
+#  it keeps the same top three and bottom two but moves PNC from 8th to 4th.)
+pctl <- function(x) 100 * rank(x, ties.method = "average", na.last = "keep") / sum(!is.na(x))
+pressure_z <- function(d, wA = 0.5) {
+  for (i in seq_len(nrow(PRESSURE_INDICATORS))) {
+    v <- PRESSURE_INDICATORS$var[i]
+    d[[paste0("p_", v)]] <- pctl(PRESSURE_INDICATORS$sign[i] * d[[v]])
+  }
+  cA <- paste0("p_", PRESSURE_INDICATORS$var[PRESSURE_INDICATORS$pillar == "A"])
+  cB <- paste0("p_", PRESSURE_INDICATORS$var[PRESSURE_INDICATORS$pillar == "B"])
+  d |> mutate(pillar_A = rowMeans(across(all_of(cA))), pillar_B = rowMeans(across(all_of(cB))),
+              score = wA * pillar_A + (1 - wA) * pillar_B, rank = rank(-score, ties.method = "min"))
+}
+pc <- function(p) (p - 50) / 25   # percentile -> heatmap color scale (-2 to +2)
+pressure <- pressure_inputs |> filter(ticker %in% MEMO_TICKERS) |> pressure_z() |> arrange(rank)
+# Rank of each bank on each pillar alone (used in the text under the charts)
+rank_with <- function(wA) pressure_inputs |> filter(ticker %in% MEMO_TICKERS) |> pressure_z(wA = wA) |> select(ticker, rank)
+pressure_robust <- pressure |> select(ticker, firm, rank_5050 = rank) |>
+  left_join(rank_with(1) |> rename(rank_A = rank), by = "ticker") |>
+  left_join(rank_with(0) |> rename(rank_B = rank), by = "ticker")
+# Reference row: median of the fifteen banks in Table 1
+pressure_ref <- pressure |>
+  summarise(across(c(score, up_total, down_total, nib, time, unins, brok, ltd, gap, wholesale), ~ median(.x, na.rm = TRUE)))
+
+theme_memo <- function() {
+  ggplot2::theme_minimal(base_size = 8) +
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank(),
+                   panel.grid.major = ggplot2::element_line(colour = GRID, linewidth = 0.3),
+                   axis.text = ggplot2::element_text(colour = INK2), axis.title = ggplot2::element_text(colour = INK2),
+                   plot.title = ggplot2::element_text(colour = INK, face = "bold", size = 8.5),
+                   plot.subtitle = ggplot2::element_text(colour = INK2, size = 7.5),
+                   legend.position = "none")
+}
+# Classic theme that keeps light grid lines, used by chart 1 and the supporting charts
+theme_classic_grid <- function() ggplot2::theme_classic(base_size = 8) + ggplot2::theme(
+  panel.grid.major = ggplot2::element_line(colour = GRID, linewidth = 0.3), axis.text = ggplot2::element_text(colour = INK2), axis.title = ggplot2::element_text(colour = INK2),
+  axis.line = ggplot2::element_line(colour = INK2, linewidth = 0.3), axis.ticks = ggplot2::element_line(colour = INK2, linewidth = 0.3),
+  plot.title = ggplot2::element_text(face = "bold", size = 9), plot.subtitle = ggplot2::element_text(colour = INK2, size = 7.5), plot.title.position = "plot")
+
+# Diverging fill: green (lower pressure) - neutral gray - red (higher pressure), light enough
+# for dark text; the percentile is mapped to a -2..+2 scale. Values are printed in every cell, so color is not
+# the only carrier of the information (red/green colorblind readers).
+heat_col <- function(z) {
+  ramp <- grDevices::colorRamp(c("#7cc79a", "#f0efec", "#ec8b80"))
+  t <- (pmax(pmin(z, 2), -2) + 2) / 4
+  m <- ramp(ifelse(is.na(t), 0.5, t))
+  grDevices::rgb(m[, 1], m[, 2], m[, 3], maxColorValue = 255)
+}
+cell <- function(text, z) kableExtra::cell_spec(text, "latex", background = heat_col(z))
+nf <- function(x, d = 1) formatC(x, format = "f", digits = d)
+fr_sum <- function(f) f(fr$d_cost_lo)
+```
+
+```{r geo-early, include = FALSE}
+GEO_LEVELS <- c("South", "West", "Midwest", "Northeast", "Multi-region")
+geo <- readr::read_csv(p("data/analysis/geography_profile_2026.csv"), show_col_types = FALSE) |>
+  transmute(ticker, region = factor(if_else(primary_pct >= 60, primary_region, "Multi-region"), levels = GEO_LEVELS))
+pressure_t1 <- pressure |> left_join(geo, by = "ticker") |> arrange(region, desc(score))
+```
+
+```{r startcost-early, include = FALSE}
+# Window for panels 1-3 and the Rate paid bullet: first rate cut (2024Q3) to 2026Q2, pro forma for deals; banks with a merger flagged at either end are excluded.
+d0q <- as.Date("2024-09-30")   # first rate cut quarter
+g0 <- pf_at(d0q) |> transmute(ticker, grp, dep0 = deposits, nib0 = nib, ln0 = loans, c0 = cost_ib_deposits, m0 = !is.na(merger_in_quarter) & nzchar(merger_in_quarter))
+g1 <- pf_at(down_end) |> transmute(ticker, dep1 = deposits, nib1 = nib, ln1 = loans, c1 = cost_ib_deposits, m1 = !is.na(merger_in_quarter) & nzchar(merger_in_quarter))
+gx <- inner_join(g0, g1, by = "ticker") |> filter(grp %in% MAIN_GROUPS, !m0, !m1) |>
+  mutate(ib_g = 100 * ((dep1 - nib1) / (dep0 - nib0) - 1), ln_g = 100 * (ln1 / ln0 - 1), d_cost = 100 * (c1 - c0))
+fit_sc <- lm(d_cost ~ c0, data = gx)                       # change in cost on starting cost (bp per point of starting cost)
+pct_cut <- -mean(100 * (gx$c1 / gx$c0 - 1))                # average proportional fall in interest-bearing cost
+sd0 <- 100 * sd(gx$c0); sd1 <- 100 * sd(gx$c1)             # spread across banks, bp, at the start and now
+# Firms in the Fed's 2026 stress test (the CCAR-era universe, data/reference/stress_test_bank_universe.csv); their names are shaded in the tables
+stress_tk <- readr::read_csv(p("data/reference/stress_test_bank_universe.csv"), show_col_types = FALSE) |> filter(grepl("^Stress test", group)) |> pull(ticker) |> unique()
+bank_cell <- function(firm, ticker, mark = "") {
+  txt <- paste0(gsub("&", "\\&", firm, fixed = TRUE), mark, " (", ticker, ")")
+  ifelse(ticker %in% stress_tk, kableExtra::cell_spec(txt, "latex", background = "#fde3c4", escape = FALSE), txt)
+}
+tu <- arrow::read_parquet(p("data/analysis/rates_daily.parquet")) |> filter(date >= as.Date("2024-08-01")) |> arrange(date) |>
+  mutate(chg = 100 * (target_upper - lag(target_upper)))     # Fed target range moves (bp), from the NY Fed data
+cuts_bp <- -sum(tu$chg[tu$chg < 0], na.rm = TRUE); hike_date <- tu$date[which(tu$chg > 0)][1]; hike_bp <- tu$chg[which(tu$chg > 0)][1]
+cor_dep <- cor(gx$ib_g, gx$d_cost); cor_loan <- cor(gx$ln_g, gx$d_cost)
+cv0 <- sd(gx$c0) / median(gx$c0); cv1 <- sd(gx$c1) / median(gx$c1)
+sd21 <- 100 * sd(pf_at(as.Date("2021-12-31")) |> filter(ticker %in% gx$ticker) |> pull(cost_ib_deposits))   # spread at the start of the hiking cycle
+fit_g <- summary(lm(d_cost ~ c0 + ib_g, data = gx))$coef["ib_g", ]
+tu_now <- tail(na.omit(tu$target_upper), 1)
+rng_now <- paste0(nf(tu_now - 0.25, 2), "%-", nf(tu_now, 2), "%")
+```
+
+```{r numbers, include = FALSE}
+top3 <- pressure$firm[pressure$rank <= 3]; bottom2 <- rev(tail(pressure$firm, 2))
+nm <- function(t) unname(FIRM_NAMES[t]); and_list <- function(x) if (length(x) > 1) paste0(paste(x[-length(x)], collapse = ", "), " and ", x[length(x)]) else x
+av <- av_all |> filter(ticker %in% MEMO_TICKERS)         # R/build_availability_series.R
+avg <- readr::read_csv(p("data/analysis/availability_by_group.csv"), show_col_types = FALSE)
+gr_reg <- avg[avg$group == "Regionals (15)", ]; gr_gsib <- avg[avg$group == "GSIBs", ]
+up_hi <- pressure[which.max(pressure$up_total), ]; up_lo <- pressure[which.min(pressure$up_total), ]; dn_hi <- pressure[which.max(pressure$down_total), ]; dn_lo <- pressure[which.min(pressure$down_total), ]
+cost_now <- at(down_end) |> filter(ticker %in% MEMO_TICKERS); cost_hi <- cost_now[which.max(cost_now$cost_ib_deposits), ]; cost_lo <- cost_now[which.min(cost_now$cost_ib_deposits), ]
+bgap <- betas |> filter(ticker %in% MEMO_TICKERS) |> mutate(gap = up_total - down_total) |> arrange(desc(gap)) |> head(4)
+top_growth <- av |> arrange(desc(dep_g_since_first_cut)) |> head(4) |> pull(ticker)
+nib_lost <- av |> filter(nib_g_since_first_cut < 0) |> arrange(nib_g_since_first_cut) |> pull(ticker)
+sens15 <- sens |> filter(ticker %in% MEMO_TICKERS)
+top5 <- pressure_t1 |> filter(rank <= 5); top5_sw <- top5 |> filter(region %in% c("South", "West"))
+ro15 <- readr::read_csv(p("data/analysis/runoff_capacity_by_bank.csv"), show_col_types = FALSE) |> filter(ticker %in% MEMO_TICKERS)   # R/build_runoff_capacity.R
+ro_med <- function(v) median(ro15[[v]], na.rm = TRUE)
+ro_pick <- function(v, n = 1, desc = TRUE) ro15$ticker[order(if (desc) -ro15[[v]] else ro15[[v]])][seq_len(n)]
+ro_val <- function(v, t) ro15[[v]][match(t, ro15$ticker)]
+regctx <- readr::read_csv(p("data/analysis/region_market_context.csv"), show_col_types = FALSE)   # R/build_geography_profile.R (FDIC SOD)
+rc <- function(r, v) regctx[[v]][regctx$region == r]
+```
+
+```{r needpaid, include = FALSE}
+# Table 1a orders the 15 banks by the funding gap: change in loans less change in deposits since the first cut, in percentage points of starting deposits (pro forma); there is no score.
+# The gap is financed by wholesale funding, equity, and drawing down securities or cash and other assets (a balance-sheet identity), which the table shows.
+# Table 1b scores "already paying more" as the average percentile rank (100 = most) of two snapshots: interest-bearing cost against the peer median
+# and CDs + brokered as a share of interest-bearing deposits. Everything else in both tables is shaded context.
+gfin <- readr::read_csv(p("data/analysis/gap_financing_by_bank.csv"), show_col_types = FALSE)   # R/build_gap_financing.R
+fin <- gfin |> filter(ticker %in% MEMO_TICKERS) |>
+  transmute(ticker, gap, f_cash = d_cash_other, f_sec = d_securities, f_whs = d_wholesale, f_good = d_goodwill, f_eq = d_equity)   # actual balance-sheet changes (points of starting deposits)
+stopifnot(all(abs(fin$gap - (fin$f_eq - fin$f_good + fin$f_whs - fin$f_sec - fin$f_cash)) < 0.01))   # gap = equity - goodwill + wholesale - securities - cash and other
+npd <- av_all |> filter(ticker %in% MEMO_TICKERS) |>
+  transmute(ticker, firm = nm(ticker), loan_g = loan_g_since_first_cut, dep_g = dep_g_since_first_cut, whs_g = wholesale_g_since_first_cut) |>
+  left_join(at(down_end) |> transmute(ticker, ibc = cost_ib_deposits, cdb = 100 * (time_deposits + brokered) / (deposits - nib)), by = "ticker") |>
+  left_join(pressure_inputs |> select(ticker, ltd), by = "ticker") |>
+  left_join(fin, by = "ticker") |>
+  mutate(cost_rel = 100 * (ibc - median(ibc)),
+         p_cost = pctl(cost_rel), p_cdb = pctl(cdb), P = rowMeans(cbind(p_cost, p_cdb)),
+         rank_gap = rank(-gap, ties.method = "min"), rank_P = rank(-P, ties.method = "min"))
+needs_low <- npd |> arrange(gap) |> head(4)
+paid_top <- npd |> arrange(desc(P)) |> head(4); gap_top <- npd |> arrange(desc(gap)) |> head(4); neg_gap <- npd |> filter(gap < 0) |> arrange(gap)
+gap_vs_A <- cor(npd$gap, pressure$pillar_A[match(npd$ticker, pressure$ticker)], method = "spearman")
+growers <- npd |> filter(ticker %in% c("PNFP", "EWBC", "WAL", "FCNCA"))
+gl <- readr::read_csv(p("data/analysis/gap_leads_cost.csv"), show_col_types = FALSE)   # R/build_gap_leads_cost.R
+```
+
+```{r bullet-prep, include = FALSE}
+# Objects used only by the page-1 bullets, all from the data built above. Guards fail the knit if the data stop supporting the wording.
+med_gap <- median(npd$gap); med_P <- median(npd$P)
+both <- npd |> filter(gap > med_gap, P >= med_P) |> arrange(desc(gap))                 # gap above the median, pricing at or above it
+lowP_big <- npd |> filter(gap > med_gap, P < med_P) |> arrange(desc(gap))              # gap above the median, pricing below it
+hiP <- npd |> filter(P >= 75) |> arrange(desc(P))
+gmax <- npd |> slice_max(gap, n = 1)
+stopifnot(all(lowP_big$cost_rel < 0), all(hiP$cost_rel > 0))
+src <- fin |> transmute(ticker, c_eq = f_eq, c_good = -f_good, c_whs = f_whs, c_sec = -f_sec, c_cash = -f_cash)   # contributions to the gap
+src$main <- c("equity", "goodwill", "wholesale", "securities", "cash")[max.col(as.matrix(src[c("c_eq", "c_good", "c_whs", "c_sec", "c_cash")]), ties.method = "first")]
+big <- src |> inner_join(npd |> select(ticker, gap), by = "ticker") |> filter(gap > med_gap) |> arrange(desc(gap)) |> mutate(firm = nm(ticker))
+sec_big <- big |> filter(c_sec >= 2); whs_big <- big |> filter(c_whs >= 2.5)   # larger-gap banks that financed it with 2+ points of securities, or 2.5+ of wholesale funding
+mixq <- at(down_end) |> filter(ticker %in% MEMO_TICKERS) |> transmute(ticker, tb = 100 * (time_deposits + brokered) / (deposits - nib), ibc = cost_ib_deposits)
+mtb <- median(mixq$tb); mibc <- median(mixq$ibc)
+shop <- mixq |> filter(tb >= mtb, ibc > mibc + 0.10) |> mutate(firm = nm(ticker), rel = 100 * (ibc - mibc)) |> arrange(desc(rel))   # Chart 1b: rate-shopper book at a high price
+core <- mixq |> filter(tb < mtb, ibc < mibc) |> mutate(firm = nm(ticker), rel = 100 * (ibc - mibc)) |> arrange(rel)                 # Chart 1b: core-funded, low cost
+med_nib <- median(at(down_end) |> filter(ticker %in% MEMO_TICKERS) |> pull(nib_share))
+core <- core |> left_join(at(down_end) |> select(ticker, nib_share), by = "ticker")
+fr_strong <- core |> filter(nib_share >= med_nib); fr_other <- core |> filter(nib_share < med_nib)   # strongest franchises: core-funded, low cost, noninterest-bearing share at or above the median
+stopifnot(nrow(fr_strong) > 0, nrow(fr_other) > 0, all(hiP$ticker %in% shop$ticker))
+# Firms the bullets call out (tickers, in the order the text uses): four already paying a lot with small or negative gaps; three with a funding gap as well as above-median cost
+ord_by <- function(d, tk) d[match(tk, d$ticker), ]
+growers <- ord_by(growers, c("PNFP", "EWBC", "FCNCA", "WAL"))
+three <- ord_by(npd |> filter(ticker %in% c("FHN", "ZION", "HBAN")), c("FHN", "ZION", "HBAN"))
+stopifnot(nrow(growers) == 4, all(growers$ticker %in% hiP$ticker), all(growers$gap < med_gap), all(three$gap > med_gap), all(three$cost_rel > 0), all(c(growers$ticker, three$ticker) %in% shop$ticker))
+seven <- ord_by(bind_rows(growers, three) |> select(ticker, gap, cost_rel) |>
+  left_join(mixq |> select(ticker, tb), by = "ticker") |> left_join(pressure |> select(ticker, up_total, down_total), by = "ticker"),
+  c("ZION", "FHN", "PNFP", "WAL", "EWBC", "FCNCA", "HBAN"))
+ahead <- growers |> filter(gap < 0); even <- growers |> filter(gap >= 0)   # deposits outpaced loans / roughly kept pace (gap is a change since the first cut, not a 2026 level)
+med_ltd <- median(npd$ltd)
+stopifnot(nrow(ahead) == 3, nrow(even) == 1)
+strong <- seven |> filter(tb > mtb + 5); mild <- seven |> filter(tb <= mtb + 5)   # high rate-shopper share, and those at about the median
+med_up <- median(pressure$up_total[pressure$ticker %in% MEMO_TICKERS])
+beta_hi <- seven |> filter(up_total >= med_up + 0.04) |> arrange(desc(up_total)); beta_near <- seven |> filter(up_total < med_up + 0.04)
+fr_strong <- fr_strong |> left_join(pressure |> select(ticker, up_total), by = "ticker")
+stopifnot(all(fr_strong$up_total < med_up))   # the strong-franchise sentence says their up-cycle betas sit under the median
+stopifnot(nrow(strong) == 5, nrow(mild) == 2, nrow(beta_hi) > 0, nrow(beta_near) > 0)
+rs_at <- function(d) pf_at(d) |> filter(ticker %in% MEMO_TICKERS) |> transmute(ticker, tb = 100 * (time_deposits + brokered) / (deposits - nib))
+rs <- inner_join(rs_at(as.Date("2021-12-31")), rs_at(down_end), by = "ticker", suffix = c("21", "26")) |>
+  left_join(pressure |> select(ticker, up_total), by = "ticker") |> mutate(up = up_total)   # CDs plus brokered, % of interest-bearing deposits, at the start of the last hiking window and now
+stopifnot(nrow(rs) == 15, median(rs$tb26) > median(rs$tb21))
+cost21 <- median(pf_at(as.Date("2021-12-31")) |> filter(ticker %in% MEMO_TICKERS) |> pull(cost_ib_deposits)); cost_now <- median(npd$ibc)   # going into the last hiking cycle vs now
+stopifnot(cost_now > cost21, setequal(ro_pick("coverage_x", 3, FALSE), three$ticker), ro_pick("fhlb_pct_assets", 1) == "PNC", setequal(lowP_big$ticker, c("PNC", "USB", "FITB")))
+```
+
+
+- **Objective:** This memo infers deposit dynamics during the last cutting cycle (`r qlab(d0q)` to `r qlab(down_end)`) at sampled large regional banks (CCARs + 5), considering: deposit-gathering strategies deployed, positioning, and which banks may need to shift approaches as the rate regime shifts to a hiking cycle. Using Call Report filings, and public earnings calls for context, the analysis explores which banks ran a funding gap, where loans outpaced deposits (\hyperref[tab:t1a]{Table 1a}), and which carried a pricing gap to fund growth, paying more than peers or relying on CDs and brokered funding (\hyperref[tab:t1b]{Table 1b}). Four sources of pressure frame the read: the rate a bank pays (\hyperref[tab:t1b]{Table 1b}, \hyperlink{chart1b}{Chart 1b}), the deposit mix shift (\hyperref[tab:t2]{Table 2}), potential run-off volume (\hyperref[tab:t3]{Table 3}), and the cost of replacement funds (\hyperref[tab:t3]{Table 3}).
+
+- **Strategies in the last cycle:** Two approaches stand out (\hyperref[tab:t1a]{Table 1a}, \hyperref[tab:t1b]{Table 1b}, \hyperlink{chart1a}{Chart 1a}). `r and_list(core$ticker)` ran core-funded books, with CDs and brokered funding at `r nf(min(core$tb), 0)`%-`r nf(max(core$tb), 0)`% of interest-bearing deposits and costs `r nf(min(abs(core$rel)), 0)`-`r nf(max(abs(core$rel)), 0)`bp below the median. `r and_list(growers$ticker)` paid to grow: with IB costs `r nf(min(growers$cost_rel), 0)`-`r nf(max(growers$cost_rel), 0)`bp above the median and deposits up `r nf(min(growers$dep_g), 0)`%-`r nf(max(growers$dep_g), 0)`%, outpacing loans by `r nf(min(abs(ahead$gap)), 1)`-`r nf(max(abs(ahead$gap)), 1)` points of starting deposits, which built capacity for future loans heading into 2026Q3 (loans-to-deposits is still above the `r nf(med_ltd, 0)`% median at `r sum(growers$ltd > med_ltd)` of the `r nrow(growers)`).
+
+- **What drives cost and rate sensitivity:** Deposit growth and loan growth do not explain the change in deposit cost over the past cycle (\hyperlink{supchart}{supporting charts 1-2}); costs shrank proportionally and the spread across the sample narrowed `r nf(sd0 - sd1, 0)`bp (\hyperlink{supchart}{supporting chart 3}), shifting the analysis to the deposit mix to infer franchise strength. Rate-shopper balances are largest at `r and_list(strong$ticker)`, and to a lesser extent at `r and_list(mild$ticker)` (CDs and brokered funding of `r nf(min(seven$tb), 0)`%-`r nf(max(seven$tb), 0)`% of interest-bearing deposits against a `r nf(mtb, 0)`% median, \hyperlink{chart1b}{Chart 1b}), and those depositors are likely to stay rate-sensitive going forward; previous up-cycle betas were also higher at `r and_list(beta_hi$ticker)` (`r nf(min(beta_hi$up_total), 2)`-`r nf(max(beta_hi$up_total), 2)` against `r nf(med_up, 2)`) but not at `r and_list(beta_near$ticker)`. We see the strongest deposit franchises at `r and_list(fr_strong$ticker)`: costs `r nf(min(abs(fr_strong$rel)), 0)`-`r nf(max(abs(fr_strong$rel)), 0)`bp below the median, below-median CDs and brokered funding, and higher noninterest-bearing shares (`r nf(min(fr_strong$nib_share), 0)`%-`r nf(max(fr_strong$nib_share), 0)`% against `r nf(med_nib, 0)`%) as well as up-cycle betas below the median (`r nf(min(fr_strong$up_total), 2)`-`r nf(max(fr_strong$up_total), 2)` against `r nf(med_up, 2)`), so less of the last Fed hike passed through to deposit costs, with mix steady or improving since the first cut (\hyperref[tab:t2]{Table 2}).
+
+- **Who may change strategy:** `r and_list(three$ticker)` pay above-median costs and still saw loans outpace deposits (\hyperref[tab:t1a]{Table 1a}), so they are paying for funding and are still short of it; with costs already high against the loans they carry, they are the likeliest to reassess pricing, mix or loan growth. `r and_list(lowP_big$ticker)` also saw loans outpace deposits, but from cheap bases (costs `r nf(min(abs(lowP_big$cost_rel)), 0)`-`r nf(max(abs(lowP_big$cost_rel)), 0)`bp below the median); adding rate-book funding would cost them more than their current base, with PNC already paying `r nf(ro_val("cd_cost", "PNC"), 2)`% on CDs against a `r nf(ro_med("cd_cost"), 2)`% median and carrying the most FHLB advances (`r nf(ro_val("fhlb_pct_assets", "PNC"), 1)`% of assets).
+
+- **Higher cost start for cycle, and what could run (\hyperref[tab:t3]{Table 3}):** Median interest-bearing cost is `r nf(cost_now, 2)`% going in, against `r nf(cost21, 2)`% at the start of the last hiking cycle, so there is less cushion before deposit pricing bites, and the share of CDs and brokered funding in the deposit mix has roughly doubled, from `r nf(median(rs$tb21), 0)`% to `r nf(median(rs$tb26), 0)`% of interest-bearing deposits (\hyperlink{supchart}{supporting chart 4}). Replacement funds cost more than the existing base: Typical CD rates are at `r nf(ro_med("cd_cost"), 2)`% and FHLB advances around `r nf(ro_med("fhlb_pct_assets"), 1)`% of assets (highest at `r and_list(ro_pick("fhlb_pct_assets", 3))`, `r nf(min(ro_val("fhlb_pct_assets", ro_pick("fhlb_pct_assets", 3))), 1)`%-`r nf(max(ro_val("fhlb_pct_assets", ro_pick("fhlb_pct_assets", 3))), 1)`%). What could leave: uninsured deposits are ~`r nf(ro_med("uninsured_pct"), 0)`% of deposits and CDs due within a year ~`r nf(ro_med("cd_le1y_pct_dep"), 0)`%; cash plus unpledged securities cover a median `r nf(ro_med("coverage_x"), 2)`x of that pool if all of it left (a rough gauge), thinnest at `r and_list(ro_pick("coverage_x", 3, FALSE))` (`r nf(min(ro_val("coverage_x", ro_pick("coverage_x", 3, FALSE))), 2)`x-`r nf(max(ro_val("coverage_x", ro_pick("coverage_x", 3, FALSE))), 2)`x). `r sum(guide$tone_q2 == "intensifying")` of the `r nrow(guide)` management noted deposit competition intensifying on their `r qlab(down_end)` calls.
+
+- **Combinations to watch:** (1) A funding need, above-median costs, and thin coverage: `r and_list(three$ticker)`, with coverage of `r nf(min(ro_val("coverage_x", three$ticker)), 2)`x-`r nf(max(ro_val("coverage_x", three$ticker)), 2)`x, have the least room to absorb outflows without paying up (\hyperref[tab:t1a]{Table 1a}, \hyperref[tab:t3]{Table 3}). (2) A rate-shopper book with high pass-through: `r and_list(beta_hi$ticker)` have up-cycle betas of `r nf(min(beta_hi$up_total), 2)`-`r nf(max(beta_hi$up_total), 2)` against a `r nf(med_up, 2)` median, so a hike is likely to reprice faster (\hyperref[tab:t1b]{Table 1b}, \hyperlink{chart1b}{Chart 1b}). (3) A funding need on a cheap base: `r and_list(lowP_big$ticker)` would pay a marginal price well above their average cost, since CDs cost a median `r nf(ro_med("cd_cost"), 2)`% against interest-bearing costs of `r nf(min(npd$ibc[npd$ticker %in% lowP_big$ticker]), 2)`%-`r nf(max(npd$ibc[npd$ticker %in% lowP_big$ticker]), 2)`% (\hyperref[tab:t3]{Table 3}).
+
+- **Why this cycle could run differently: AI.** Both sides of the deposit relationship can use AI to seek yield: customers can monitor balances and move idle cash to higher-paying products automatically, and banks can use the same tools to price deposits and target rate-sensitive balances quickly. That could raise runoff and betas relative to the last cycle, reaching first the banks with rate-shopper books and thin coverage (\hyperref[tab:t1b]{Table 1b}, \hyperref[tab:t3]{Table 3}). We treat it as a scenario, not a base case: account-opening and identity checks and consumer inertia limit how fast balances move.
+
+- **Analysis limitations:** Several growth-and-cost patterns lean on four banks (WAL, EWBC, FCNCA, PNFP) while strategies are inferred from balance sheets and costs, not observed in pricing or customer data. Betas come from the 2021-2024 hikes, when deposits were flush with excess liquidity; this cycle starts from higher costs, so pass-through could differ. Memo measures deposit cost, not earnings: asset repricing (securities, fixed-rate loans, swaps) is not included. Levels are not adjusted for acquisitions, only growth.
+
+\newpage
+
+```{r heatmap}
+tone_lab <- c(intensifying = "Intensifying", stable = "Stable", easing = "Easing")
+# Banks with a significant acquisition between the start of the hiking cycle (2021Q4) and 2026Q2 are starred; acquired books are not separated out
+deal_mark <- setNames(rep("*", 8), c("FITB", "HBAN", "PNC", "PNFP", "FCNCA", "CFG", "MTB", "USB"))
+# Table 1 is grouped by footprint: the Census region holding at least 60% of the bank's branch deposits (R/build_geography_profile.R, FDIC SOD,
+# booking branches capped); banks without one are multi-region. Groups run South, West, Midwest, Northeast, Multi-region; banks by score within a group.
+geo_counts <- table(pressure_t1$region)
+# Table helpers. Column rules: solid at the ends of each pillar, dotted within a pillar (arydshln, set in the header).
+tbl_layout <- function(lead, pillars, score = FALSE) {
+  align <- lead; align[length(align)] <- paste0(align[length(align)], "|")
+  if (score) align <- c(align, "r|")
+  for (k in seq_along(pillars)) {
+    pk <- pillars[[k]]; if (length(pk) > 1) pk[-length(pk)] <- paste0(pk[-length(pk)], ":")
+    if (k < length(pillars)) pk[length(pk)] <- paste0(pk[length(pk)], "|")
+    align <- c(align, pk)
+  }
+  list(align = align, lead = lead, score = score, sizes = lengths(pillars))
+}
+hdr_align <- function(n) c(rep("c|", n - 1), "c")
+# Single-colour shading for the financing columns: the larger the figure in either direction, the darker the blue (no good or bad)
+blue_abs <- function(text, x, m) {
+  rgbm <- grDevices::colorRamp(c("#f4f8fc", "#4f86c6"))(pmin(abs(x) / m, 1))
+  kableExtra::cell_spec(text, "latex", background = grDevices::rgb(rgbm[, 1], rgbm[, 2], rgbm[, 3], maxColorValue = 255))
+}
+hdr_fs <- 7   # font size of table column labels and pillar headings
+# Footprint labels are ordinary rows while the table is built (marker text), then rewritten as multicolumn rows that carry the solid pillar rules
+# but no dotted rules, so the dots do not run through the label rows
+with_region_rows <- function(d, counts, lab_col) {
+  n <- sum(counts); out <- list(); i <- 0
+  for (g in seq_along(counts)) {
+    hdr <- d[1, ]; hdr[1, ] <- ""; hdr[[lab_col]] <- paste0("@@REGION:", names(counts)[g], "@@")
+    rows <- d[i + seq_len(counts[g]), ]; rows[[lab_col]] <- paste0("\\hspace{0.9em}", rows[[lab_col]])
+    out[[g]] <- dplyr::bind_rows(hdr, rows); i <- i + counts[g]
+  }
+  dplyr::bind_rows(c(out, list(d[-seq_len(n), ])))
+}
+fix_regions <- function(tbl, L, label_idx) {
+  lines <- strsplit(as.character(tbl), "\n", fixed = TRUE)[[1]]
+  i <- grep("@@REGION:", lines, fixed = TRUE)
+  labs <- sub(".*@@REGION:(.*)@@.*", "\\1", lines[i])
+  row_tex <- function(lab) {
+    nl <- length(L$lead); cells <- character()
+    for (j in seq_len(nl)) cells <- c(cells, sprintf("\\multicolumn{1}{%s}{%s}", paste0(L$lead[j], if (j == nl) "|" else ""), if (j == label_idx) paste0("\\textbf{", lab, "}") else ""))
+    if (L$score) cells <- c(cells, "\\multicolumn{1}{r|}{}")
+    np <- length(L$sizes)
+    for (k in seq_len(np)) cells <- c(cells, sprintf("\\multicolumn{%d}{%s}{}", L$sizes[k], if (k < np) "c|" else "c"))
+    paste0(paste(cells, collapse = " & "), " \\\\")
+  }
+  lines[i] <- vapply(labs, row_tex, "")
+  out <- tbl; out[1] <- paste(lines, collapse = "\n"); out
+}
+```
+
+\begin{flushright}\fbox{\parbox{0.4\textwidth}{\scriptsize\raggedright * marks a major merger since 2021 (a large bank or thrift absorbed in the period). Levels are not adjusted for M\&A; growth figures are pro forma for deals.}}\end{flushright}\vspace{-0.4em}
+\renewcommand{\thetable}{1a}\renewcommand{\theHtable}{1a}
+```{r table1a}
+# Table 1a: who needs to gather funding, ordered by the funding gap, with how each bank financed it. The gap and the context columns are shaded by percentile rank among the 15
+# (red = more need); the five financing columns are shaded blue by size in either direction (a larger figure is not clearly good or bad); rows are separated by dotted rules.
+nf1 <- function(x) sub("^-0\\.0$", "0.0", nf(x, 1))   # avoid "-0.0"
+mx <- max(abs(unlist(npd[c("f_cash", "f_sec", "f_whs", "f_good", "f_eq")])))
+d1 <- npd |> arrange(desc(gap)) |> transmute(
+  Rank = as.character(rank_gap), Bank = bank_cell(firm, ticker, unname(deal_mark[ticker]) |> tidyr::replace_na("")),
+  Gap = cell(nf(gap), pc(100 * (rank(gap) - 0.5) / n())), FE = blue_abs(nf1(f_eq), f_eq, mx), FG = blue_abs(nf1(f_good), f_good, mx),
+  FW = blue_abs(nf1(f_whs), f_whs, mx), FS = blue_abs(nf1(f_sec), f_sec, mx), FC = blue_abs(nf1(f_cash), f_cash, mx),
+  Loan = cell(nf(loan_g), pc(pctl(loan_g))), Dep = cell(nf(dep_g), pc(pctl(-dep_g))), LD = cell(nf(ltd), pc(pctl(ltd))))
+m1 <- npd |> summarise(Gap = nf(median(gap)), FE = nf(median(f_eq)), FG = nf(median(f_good)), FW = nf(median(f_whs)), FS = nf(median(f_sec)), FC = nf(median(f_cash)),
+                       Loan = nf(median(loan_g)), Dep = nf(median(dep_g)), LD = nf(median(ltd))) |>
+  mutate(Rank = "", Bank = "Regional Sample Median") |> select(all_of(names(d1)))
+L1a <- tbl_layout(c("c", "l"), list("r", rep("r", 5), rep("r", 3)))
+t1a <- knitr::kable(dplyr::bind_rows(d1, m1), format = "latex", booktabs = TRUE, escape = FALSE, linesep = "", align = L1a$align,
+  col.names = kableExtra::linebreak(c("Rank", "Bank", "Funding gap since\nfirst cut (\\% pts)", "Equity $\\Delta$", "$-$ Goodwill $\\Delta$", "Wholesale\nfunding $\\Delta$", "$-$ Securities $\\Delta$", "$-$ Cash and other $\\Delta$", "Loan growth since\nfirst cut (\\%)", "Deposit growth since\nfirst cut (\\%)", "Loans / deposits,\n2026Q2 (\\%)"), align = "c"),
+  label = "t1a", caption = paste0("Who needs to gather funding, ordered by funding gap, ", qlab(down_end))) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 8.5) |>
+  kableExtra::row_spec(0, font_size = hdr_fs) |>
+  kableExtra::add_header_above(c(" " = 2, " " = 1, "How the gap was funded (% pts of starting deposits)" = 5, "Context" = 3), bold = TRUE, align = hdr_align(4), font_size = hdr_fs) |>
+  kableExtra::row_spec(nrow(d1), extra_latex_after = "\\midrule") |> kableExtra::row_spec(nrow(d1) + 1, italic = TRUE, color = INK2)
+knitr::asis_output(paste0("\\begingroup\\renewcommand{\\arraystretch}{0.8}\n", paste(t1a, collapse = "\n"), "\n\\endgroup"))
+```
+\vspace{-0.3em}
+\footnotesize
+**Funding gap** = change in loans less change in deposits, `r qlab(d0q)` to `r qlab(down_end)`, in percentage points of starting deposits, pro forma. The five $\Delta$ columns are the actual balance-sheet changes, in the order of the identity in \hyperlink{appB}{Appendix B}, shaded blue by absolute size; Shaded names are in the Fed's 2026 stress test.
+\normalsize
+
+\renewcommand{\thetable}{1b}\renewcommand{\theHtable}{1b}
+```{r table1b}
+# Table 1b: who is already paying more (cost already in the run-rate). Two scored snapshots; the change columns and the deposit base are shaded context.
+d2 <- npd |> arrange(desc(P)) |> left_join(pressure |> select(ticker, up_total, down_total, nib, unins, tone_q2), by = "ticker") |> transmute(
+  Rank = as.character(rank_P), Bank = bank_cell(firm, ticker, unname(deal_mark[ticker]) |> tidyr::replace_na("")),
+  Score = cell(nf(P, 0), pc(P)), Up = cell(nf(up_total, 2), pc(pctl(up_total))), Down = cell(nf(down_total, 2), pc(pctl(down_total))),
+  IBC = cell(nf(ibc, 2), pc(p_cost)), CDB = cell(nf(cdb), pc(p_cdb)),
+  NIB = cell(nf(nib), pc(pctl(-nib))), Un = cell(nf(unins, 1), pc(pctl(unins))),
+  WG = cell(nf(whs_g, 0), pc(pctl(whs_g))),
+  Tone = tidyr::replace_na(unname(tone_lab[tone_q2]), "n/a"))
+m2 <- npd |> left_join(pressure |> select(ticker, up_total, down_total, nib, unins), by = "ticker") |>
+  summarise(Score = nf(median(P), 0), IBC = nf(median(ibc), 2), CDB = nf(median(cdb)), WG = nf(median(whs_g), 0),
+            Up = nf(median(up_total), 2), Down = nf(median(down_total), 2), NIB = nf(median(nib)), Un = nf(median(unins))) |>
+  mutate(Rank = "", Bank = "Regional Sample Median", Tone = "") |> select(all_of(names(d2)))
+L1b <- tbl_layout(c("c", "l"), list(rep("r", 2), rep("r", 2), c(rep("r", 3), "l")), score = TRUE)
+t1b <- knitr::kable(dplyr::bind_rows(d2, m2), format = "latex", booktabs = TRUE, escape = FALSE, linesep = "", align = L1b$align,
+  col.names = kableExtra::linebreak(c("Rank", "Bank", "Pricing\nscore", "Up-cycle\nbeta", "Down-cycle\nbeta", "Interest-bearing cost\n(\\% of avg. IB deposits)", "CDs + brokered\n(\\% of IB deposits)", "Noninterest-bearing\n(\\% of total deposits)", "Uninsured\n(\\% of domestic deposits)",
+                                       "Wholesale funding growth\nsince first cut (\\%)", "Management\ntone, Q2"), align = "c"),
+  label = "t1b", caption = paste0("Who is already paying more for deposits, ", qlab(down_end))) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 8.5) |>
+  kableExtra::row_spec(0, font_size = hdr_fs) |>
+  kableExtra::add_header_above(c(" " = 2, " " = 1, "Pass-through (context)" = 2, "Already paying (scored)" = 2, "Context (not scored)" = 4), bold = TRUE, align = hdr_align(5), font_size = hdr_fs) |>
+  kableExtra::row_spec(nrow(d2), extra_latex_after = "\\midrule") |> kableExtra::row_spec(nrow(d2) + 1, italic = TRUE, color = INK2)
+knitr::asis_output(paste0("\\begingroup\\renewcommand{\\arraystretch}{0.88}\n", paste(t1b, collapse = "\n"), "\n\\endgroup"))
+```
+\vspace{-0.3em}
+\footnotesize
+**Pricing score** (0-100): average percentile rank gathered from interest-bearing cost against the peer median and CDs plus brokered as a share of interest-bearing deposits. Levels are at 2026Q2; changes run from the first cut (2024Q3). Betas, noninterest-bearing and uninsured shares, wholesale funding growth for context but not scored. **Up-cycle** = `r qlab(up_start)` to `r qlab(up_end)`; **down-cycle** = `r qlab(up_end)` to `r qlab(down_end)`.
+\normalsize
+\renewcommand{\thetable}{\arabic{table}}\renewcommand{\theHtable}{\arabic{table}}\setcounter{table}{1}
+
+\vspace{1.2em}
+\hypertarget{chart1a}{}
+\noindent{\serifface\small\bfseries Chart 1a: Who needs to gather and who is already paying more: funding gap against pricing score\par}\vspace{0.3em}
+```{r gapP, fig.width = 7.3, fig.height = 3.0, out.width = "100%"}
+# Table 1a's funding gap (x) against Table 1b's pricing score (y) for the fifteen regionals; dashed lines are the medians of the fifteen.
+# The universal GSIBs are placed on the same two scales without re-ranking the fifteen: the pricing score is the average of the share of the fifteen
+# with an equal or lower interest-bearing cost (against the regional median) and an equal or lower CDs-plus-brokered share, as in the old comparison table.
+# Orange points are Fed stress-test firms (all the GSIBs are), the same shading as the bank names in the tables.
+placed <- function(v, r) vapply(v, function(x) 100 * mean(r <= x), numeric(1))
+gs <- pressure_inputs |> filter(grp == "GSIB universal") |> select(ticker) |>
+  left_join(inner_join(pf_at(d0q) |> transmute(ticker, L0 = loans, D0 = deposits), pf_at(down_end) |> transmute(ticker, L1 = loans, D1 = deposits), by = "ticker") |>
+              transmute(ticker, gap = 100 * ((L1 - L0) - (D1 - D0)) / D0), by = "ticker") |>
+  left_join(at(down_end) |> transmute(ticker, ibc = cost_ib_deposits, cdb = 100 * (time_deposits + brokered) / (deposits - nib)), by = "ticker") |>
+  mutate(P = rowMeans(cbind(placed(ibc, npd$ibc), placed(cdb, npd$cdb))), set = "GSIB")
+gpP <- bind_rows(npd |> transmute(ticker, gap, P, set = "Regional sample"), gs |> select(ticker, gap, P, set)) |>
+  mutate(st = if_else(ticker %in% stress_tk, "#f2a65a", "white"))
+mg <- median(gpP$gap[gpP$set == "Regional sample"]); mP <- median(gpP$P[gpP$set == "Regional sample"]); xr <- range(gpP$gap) + c(-0.6, 0.6)
+ggplot2::ggplot(gpP, ggplot2::aes(gap, P)) +
+  ggplot2::geom_vline(xintercept = mg, colour = INK2, linewidth = 0.35, linetype = "dashed") +
+  ggplot2::geom_hline(yintercept = mP, colour = INK2, linewidth = 0.35, linetype = "dashed") +
+  ggplot2::geom_point(ggplot2::aes(fill = st, shape = set), size = 2.6, colour = INK, stroke = 0.3) +
+  ggplot2::scale_fill_identity() + ggplot2::scale_shape_manual(values = c("Regional sample" = 21, GSIB = 24)) +
+  ggplot2::geom_text(data = subset(gpP, ticker == "FHN"), ggplot2::aes(label = ticker), size = 2.3, fontface = "bold", colour = INK2, hjust = 0, nudge_x = 0.2, nudge_y = 5) +
+  ggplot2::geom_text(data = subset(gpP, ticker == "TFC"), ggplot2::aes(label = ticker), size = 2.3, fontface = "bold", colour = INK2, hjust = 0, nudge_x = 0.2, nudge_y = -5) +
+  ggplot2::geom_text(data = subset(gpP, ticker == "PNFP"), ggplot2::aes(label = ticker), size = 2.3, fontface = "bold", colour = INK2, hjust = 1, nudge_x = -0.2, nudge_y = 5) +
+  ggrepel::geom_text_repel(data = subset(gpP, !ticker %in% c("FHN", "PNFP", "TFC")), ggplot2::aes(label = ticker), size = 2.3, fontface = "bold", colour = INK2, segment.colour = GRID, min.segment.length = 0.2, max.overlaps = 40, box.padding = 0.35, seed = 7) +
+  ggplot2::annotate("text", x = xr[1], y = 118, hjust = 0, vjust = 1, size = 2.3, colour = INK2, fontface = "italic", label = "Already paying more, little need to gather") +
+  ggplot2::annotate("text", x = xr[2], y = 118, hjust = 1, vjust = 1, size = 2.3, colour = INK2, fontface = "italic", label = "Needs to gather and already paying more") +
+  ggplot2::annotate("text", x = xr[1], y = 2, hjust = 0, vjust = 0, size = 2.3, colour = INK2, fontface = "italic", label = "Low cost, little need to gather") +
+  ggplot2::annotate("text", x = xr[2], y = 2, hjust = 1, vjust = 0, size = 2.3, colour = INK2, fontface = "italic", label = "Needs to gather, low cost today") +
+  ggplot2::coord_cartesian(xlim = xr, ylim = c(0, 118)) +
+  ggplot2::labs(x = paste0("Funding gap, ", qlab(d0q), " to ", qlab(down_end), " (% pts of starting deposits)"), y = "Pricing score (0-100)", shape = NULL,
+                subtitle = "Dashed lines = regional sample medians; orange = Fed stress-test firms\nUniversal GSIBs (triangles) are scored against the regional sample median") +
+  theme_classic_grid() + ggplot2::theme(legend.position = "right", legend.text = ggplot2::element_text(size = 7), plot.margin = ggplot2::margin(2, 4, 2, 2))
+```
+
+\newpage
+
+\hypertarget{chart1b}{}
+\noindent{\serifface\small\bfseries Chart 1b: Who has the deposit franchise: rate-shopper funding against what banks pay\par}\vspace{0.3em}
+```{r mixcost, fig.width = 7.3, fig.height = 2.3, out.width = "100%"}
+# Panel 3: the make-up of each bank's interest-bearing book (CDs plus brokered as a share of interest-bearing deposits, the rate-shopper share)
+# against what it pays on interest-bearing deposits; point shading = noninterest-bearing share. Dashed lines are the medians of the 15 regional
+# banks; the corner labels name the banks in each cluster (banks within 1.5 points / 5bp of a median line are left out of the lists).
+mix <- at(down_end) |> filter(ticker %in% c(MEMO_TICKERS, "JPM", "BAC", "WFC", "C")) |>
+  transmute(ticker, firm, tb = 100 * (time_deposits + brokered) / (deposits - nib),   # nib here is the dollar amount; renamed to a share on the next line
+            nib = nib_share, ibc = cost_ib_deposits, set = if_else(ticker %in% MEMO_TICKERS, "Regional sample", "GSIB"))
+mn <- median(mix$tb[mix$set == "Regional sample"]); mc <- median(mix$ibc[mix$set == "Regional sample"])
+xr <- c(min(mix$tb) - 2, max(mix$tb) + 2)
+ggplot2::ggplot(mix, ggplot2::aes(tb, ibc)) +
+  ggplot2::geom_vline(xintercept = mn, colour = INK2, linewidth = 0.35, linetype = "dashed") +
+  ggplot2::geom_hline(yintercept = mc, colour = INK2, linewidth = 0.35, linetype = "dashed") +
+  ggplot2::geom_point(ggplot2::aes(fill = nib, shape = set), size = 2.6, colour = INK, stroke = 0.3) +
+  ggrepel::geom_text_repel(ggplot2::aes(label = ticker), size = 2.1, colour = INK2, segment.colour = GRID, min.segment.length = 0.2, max.overlaps = 40) +
+  ggplot2::annotate("text", x = xr[1], y = 3.3, hjust = 0, vjust = 1, size = 2.2, colour = INK2, fontface = "italic", lineheight = 0.95,
+                    label = "High cost despite a core-funded book") +
+  ggplot2::annotate("text", x = xr[2], y = 3.3, hjust = 1, vjust = 1, size = 2.2, colour = INK2, fontface = "italic", lineheight = 0.95,
+                    label = "Rate-shopper book at a high price") +
+  ggplot2::annotate("text", x = xr[1], y = 1.35, hjust = 0, vjust = 0, size = 2.2, colour = INK2, fontface = "italic", lineheight = 0.95,
+                    label = "Strongest franchise: core-funded, low cost") +
+  ggplot2::annotate("text", x = xr[2], y = 1.35, hjust = 1, vjust = 0, size = 2.2, colour = INK2, fontface = "italic", lineheight = 0.95,
+                    label = "Rate-shopper funding held at a low price") +
+  ggplot2::scale_shape_manual(values = c("Regional sample" = 21, GSIB = 24)) +
+  ggplot2::scale_fill_gradient(low = "#e8eef7", high = "#08306b", name = "Noninterest-bearing\nshare of deposits (%)",
+                                guide = ggplot2::guide_colourbar(barheight = grid::unit(1.8, "cm"), barwidth = grid::unit(0.3, "cm"))) +
+  ggplot2::coord_cartesian(xlim = xr, ylim = c(1.35, 3.3)) +
+  ggplot2::labs(x = "CDs plus brokered deposits as a share of interest-bearing deposits (%)", y = "Interest-bearing cost (%)", shape = NULL) +
+  theme_classic_grid() + ggplot2::theme(
+    legend.position = "right", legend.box = "vertical", legend.title = ggplot2::element_text(size = 7, colour = INK2), legend.text = ggplot2::element_text(size = 7),
+    legend.key.height = ggplot2::unit(0.35, "cm"), plot.margin = ggplot2::margin(2, 4, 2, 2))
+```
+\vspace{0.2em}
+
+```{r mixmig}
+# Mix migration: shares of total deposits at the first cut (2024Q3) and 2026Q2, pro forma for deals. NIB + savings/MMDA/NOW + time = 100%
+# (one denominator, total deposits); savings/MMDA/NOW is built from its reported line items (NOW/ATS = transaction accounts less NIB, money market, other savings, foreign-office interest-bearing) and asserted to complete the 100%.
+# Brokered is not a bucket: it sits mostly inside time deposits, on the domestic-deposit basis used in Table 1, so it is shown as an "of which" pair.
+mix_at <- function(d) pf_at(d) |> transmute(ticker, nib = 100 * nib / deposits, time = 100 * time_deposits / deposits, sav = 100 * sav_mmda_now / deposits, brok = brokered_share)
+mm <- inner_join(mix_at(d0q), mix_at(down_end), by = "ticker", suffix = c("0", "1")) |>
+  mutate(d_nib = nib1 - nib0, d_sav = sav1 - sav0, d_time = time1 - time0, d_brok = brok1 - brok0)
+stopifnot(all(abs(100 - mm$nib0 - mm$time0 - mm$sav0) < 1e-3), all(abs(100 - mm$nib1 - mm$time1 - mm$sav1) < 1e-3))   # the three shares sum to 100%: built from line items in R/build_deposit_panel.R
+mmt <- pressure_t1 |> select(ticker, firm, region) |> left_join(mm, by = "ticker")
+sgn <- function(x, txt, sign) cell(txt, pc(pctl(sign * x)))   # sign +1: a rise is more pressure; -1: a fall is more pressure
+sg <- function(x) sprintf("%+.1f", x)
+mxm <- max(abs(unlist(mm[c("d_nib", "d_sav", "d_time", "d_brok")])))   # one blue scale across the four change columns
+mtab <- mmt |> transmute(Bank = bank_cell(firm, ticker, unname(deal_mark[ticker]) |> tidyr::replace_na("")),
+  `N1` = sgn(nib1, nf(nib1), -1), `N2` = blue_abs(sg(d_nib), d_nib, mxm), `T1` = sgn(time1, nf(time1), 1), `T2` = blue_abs(sg(d_time), d_time, mxm),
+  `S1` = sgn(sav1, nf(sav1), 1), `S2` = blue_abs(sg(d_sav), d_sav, mxm), `B1` = sgn(brok1, nf(brok1), 1), `B2` = blue_abs(sg(d_brok), d_brok, mxm))
+mmed <- mmt |> summarise(across(c(nib1, d_nib, sav1, d_sav, time1, d_time, brok1, d_brok), ~ median(.x, na.rm = TRUE))) |>
+  transmute(Bank = "Regional Sample Median", N1 = nf(nib1), N2 = sg(d_nib), T1 = nf(time1), T2 = sg(d_time), S1 = nf(sav1), S2 = sg(d_sav), B1 = nf(brok1), B2 = sg(d_brok))
+nb2 <- nrow(mtab) + length(geo_counts)
+L2 <- tbl_layout("l", rep(list(c("r", "r")), 4))
+mix_tbl <- knitr::kable(dplyr::bind_rows(mtab, mmed) |> with_region_rows(geo_counts, "Bank"), format = "latex", booktabs = TRUE, escape = FALSE, linesep = "",
+  align = L2$align,
+  col.names = kableExtra::linebreak(c("Bank", rep(c(paste0("\\% of total,\n", qlab(down_end)), "Change since\n2024Q3 (\\% pts)"), 3), paste0("\\% of domestic,\n", qlab(down_end)), "Change since\n2024Q3 (\\% pts)"), align = "c"),
+  label = "t2", caption = paste0("Deposit mix ", qlab(down_end), " and migration since ", qlab(d0q))) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 7.5) |>
+  kableExtra::row_spec(0, font_size = hdr_fs) |>
+  kableExtra::add_header_above(c(" " = 1, "Noninterest-bearing" = 2, "Time deposits" = 2, "Savings, MMDA + NOW" = 2, "Brokered share (spans all categories)" = 2), bold = TRUE, align = hdr_align(5), font_size = hdr_fs) |>
+  kableExtra::row_spec(nb2, extra_latex_after = "\\midrule") |> kableExtra::row_spec(nb2 + 1, italic = TRUE, color = INK2)
+fix_regions(mix_tbl, L2, 1)
+```
+\vspace{-0.3em}
+\footnotesize
+Share columns are red-green among peers relative to reprice sensitivity. Change columns are blue by size, darker by absolute value. Shares sum to 100% by accounting identity; savings, MMDA and NOW is built from the reported items.
+\normalsize
+
+```{r runoff}
+# Table 3: positions at 2026Q2, no modeling. Built by R/build_runoff_capacity.R (pro forma firm panel plus RC-E maturity, RC-A cash, RC-B pledged
+# securities and fair values, RC-R CET1). Runoff pool = deposits that can leave or reprice quickly; costly categories = CDs and FHLB advances;
+# capacity = cash and unencumbered securities, with the unrealized loss on securities as the capital cost of selling them.
+ro <- readr::read_csv(p("data/analysis/runoff_capacity_by_bank.csv"), show_col_types = FALSE)
+rot <- pressure_t1 |> select(ticker, firm) |> left_join(ro, by = "ticker")
+nz <- function(x, d = 1) ifelse(is.na(x), "n/a", nf(x, d))
+rc3 <- function(x, sign, d = 1) cell(nz(x, d), pc(pctl(sign * x)))   # sign +1: higher = more pressure; -1: higher = more capacity
+r3 <- rot |> transmute(Bank = bank_cell(firm, ticker, unname(deal_mark[ticker]) |> tidyr::replace_na("")),
+  CC = rc3(cd_cost, 1, 2), F = rc3(fhlb_pct_assets, 1), U = rc3(uninsured_pct, 1), B = rc3(brokered_pct, 1), C = rc3(cd_le1y_pct_dep, 1),
+  K = rc3(cash_pct_dep, -1), S = rc3(unpledged_pct_dep, -1), L = rc3(unrealized_loss_pct_cet1, 1), X = cell(paste0(nz(coverage_x, 2), "x"), pc(pctl(-coverage_x))))
+r3med <- rot |> summarise(across(c(uninsured_pct, brokered_pct, cd_le1y_pct_dep, cd_cost, fhlb_pct_assets, cash_pct_dep, unpledged_pct_dep, unrealized_loss_pct_cet1, coverage_x),
+                                 ~ median(.x, na.rm = TRUE))) |>
+  transmute(Bank = "Regional Sample Median", CC = nz(cd_cost, 2), F = nz(fhlb_pct_assets), U = nz(uninsured_pct), B = nz(brokered_pct), C = nz(cd_le1y_pct_dep),
+            K = nz(cash_pct_dep), S = nz(unpledged_pct_dep), L = nz(unrealized_loss_pct_cet1), X = paste0(nz(coverage_x, 2), "x"))
+nb3 <- nrow(r3) + length(geo_counts)
+L3 <- tbl_layout("l", list(rep("r", 2), rep("r", 3), rep("r", 3), "r"))
+ro_tbl <- knitr::kable(dplyr::bind_rows(r3, r3med) |> with_region_rows(geo_counts, "Bank"), format = "latex", booktabs = TRUE, escape = FALSE, linesep = "",
+  align = L3$align,
+  col.names = kableExtra::linebreak(c("Bank", "Rate paid\non CDs (\\%)", "FHLB advances\n(\\% of assets)", "Uninsured\ndeposits", "Brokered\ndeposits", "CDs due\nwithin 1 year",
+                                       "Cash\n(\\% of deposits)", "Unpledged securities\n(\\% of deposits)", "Securities loss\n(\\% of CET1)", "Coverage of\nrunoff pool"), align = "c"),
+  label = "t3", caption = paste0("What can run, and what a bank can bear, ", qlab(down_end))) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 7.5) |>
+  kableExtra::row_spec(0, font_size = hdr_fs) |>
+  kableExtra::add_header_above(c(" " = 1, "Costly categories today" = 2, "Deposits that can run (% of deposits)" = 3, "Capacity to bear it" = 3, " " = 1), bold = TRUE, align = hdr_align(5), font_size = hdr_fs) |>
+  kableExtra::row_spec(nb3, extra_latex_after = "\\midrule") |> kableExtra::row_spec(nb3 + 1, italic = TRUE, color = INK2)
+fix_regions(ro_tbl, L3, 1)
+```
+\vspace{-0.3em}
+\footnotesize
+**Coverage** = (cash + unpledged securities) / (uninsured deposits + brokered deposits + CDs of $250K or less due within a year): very rough estimate of liquid asset coverage. Definitions are in \hyperlink{appC}{Appendix C}.
+\normalsize
+
+\newpage
+
+\hypertarget{supchart}{}
+## Appendix A: supporting charts
+
+**Growth did not push funding costs; costs compressed over the last cycle.**
+
+- **Growth is not the driver.** From `r qlab(d0q)` to `r qlab(down_end)`, deposit growth (supporting chart 1) and loan growth (supporting chart 2) show no relationship with the change in interest-bearing cost across `r nrow(gx)` banks (correlations `r nf(cor_dep, 2)` and `r nf(cor_loan, 2)`).
+- **Where a bank started is.** Every bank cut by a similar proportion (about `r nf(pct_cut, 0)`%), so each extra point of starting cost went with about `r nf(-coef(fit_sc)[2], 0)`bp more of a cut (R-squared `r nf(summary(fit_sc)$r.squared, 2)`; supporting chart 3).
+- **So costs compressed, in proportion.** The spread in cost across the banks narrowed from `r nf(sd0, 0)`bp to `r nf(sd1, 0)`bp, but relative to the median it did not move (`r nf(cv0, 2)` at the start, `r nf(cv1, 2)` at the end): banks kept their relative position. Controlling for starting cost, growth adds only about `r nf(fit_g["Estimate"], 1)`bp per point (t = `r nf(fit_g["t value"], 1)`).
+- **What this implies.** The cost gap between banks is structural (the CD, brokered and noninterest-bearing make-up in chart 1b) and scales with the level of rates: it widened as rates rose (spread of `r nf(sd21, 0)`bp at 2021Q4 against `r nf(sd0, 0)`bp at 2024Q3) and narrowed as they fell. A hike is likely to re-open it, mostly at the banks with the most CDs and brokered funding.
+
+```{r evidence, fig.width = 7.6, fig.height = 2.75}
+# Panels 1-3 (data built in startcost-early): growth from the first rate cut (2024Q3) to 2026Q2 against the change in what each bank pays on interest-bearing deposits over the same window
+# (the change, not the 2026Q2 level, so a bank's starting franchise cost drops out). Pro forma for deals (deposits, noninterest-bearing deposits, loans);
+# banks with a merger flagged at either end are excluded.
+pts <- function(d, x, y, xlab, ylab, ttl, sub = paste0("Change in cost, ", qlab(d0q), " to ", qlab(down_end))) {
+  r <- cor(d[[x]], d[[y]]); fitp <- lm(reformulate(x, y), data = d); xr <- range(d[[x]])
+  ggplot2::ggplot(d, ggplot2::aes(.data[[x]], .data[[y]])) +
+    ggplot2::geom_smooth(method = "lm", se = FALSE, colour = INK2, linewidth = 0.35, linetype = "dashed") +
+    ggplot2::geom_point(ggplot2::aes(colour = grp), size = 1.6) +
+    ggrepel::geom_text_repel(ggplot2::aes(label = ticker), size = 1.7, colour = INK2, max.overlaps = 40, segment.colour = GRID, min.segment.length = 0.2) +
+    ggplot2::annotate("text", x = xr[2] - 0.15 * diff(xr), y = predict(fitp, setNames(data.frame(xr[2] - 0.15 * diff(xr)), x)), label = paste0("r = ", nf(r, 2)),
+                      hjust = 0.5, vjust = -1.2, size = 2.4, colour = INK) +
+    ggplot2::scale_colour_manual(values = GROUP_COLS[MAIN_GROUPS]) + ggplot2::labs(x = xlab, y = ylab, title = ttl, subtitle = sub) + theme_classic_grid() + ggplot2::theme(legend.position = "none")
+}
+patchwork::wrap_plots(
+  pts(gx, "ib_g", "d_cost", "Interest-bearing deposit growth (%)", "Change in interest-bearing cost (bp)", "Supporting chart 1: Deposit growth"),
+  pts(gx, "ln_g", "d_cost", "Loan growth (%)", "Change in interest-bearing cost (bp)", "Supporting chart 2: Loan growth"),
+  pts(gx, "c0", "d_cost", paste0("Interest-bearing cost, ", qlab(d0q), " (%)"), "Change in interest-bearing cost (bp)", "Supporting chart 3: Starting cost"), nrow = 1)
+```
+\vspace{-0.3em}
+\footnotesize
+Blue = focus regionals, orange = GSIBs, green = smaller regionals (`r nrow(gx)` banks, excluding two with a merger closing at either end of the window). Growth is pro forma for deals; the change in cost is interest-bearing deposit cost in the later quarter less the earlier. Descriptive cross-sections, not causal estimates.
+\normalsize
+
+**Rate-shoppers roughly doubled during the last hiking cycle.**
+
+- **The base has changed.** The median share of CDs plus brokered funding in interest-bearing deposits rose from `r nf(median(rs$tb21), 0)`% at 2021Q4 to `r nf(median(rs$tb26), 0)`% at 2026Q2, and rose at `r sum(rs$tb26 > rs$tb21)` of the 15 banks (supporting chart 4). The migration happened during the hikes; mix has moved little since the first cut (Table 2).
+- **It predicts pass-through.** Banks that began the hikes with more CDs and brokered funding repriced more as rates rose (supporting chart 5). With 15 banks this is a tendency, not a forecast, and the betas come from a period of excess liquidity.
+
+```{r ratershoppers, fig.width = 7.6, fig.height = 2.1}
+# Supporting chart 4: CDs plus brokered as a share of interest-bearing deposits, 2021Q4 (start of the last hiking window) against 2026Q2, pro forma for deals.
+# Supporting chart 5: the 2021Q4 share against each bank's up-cycle beta (2021Q4 to 2024Q3).
+ord <- rs$ticker[order(rs$tb26)]
+dumb <- ggplot2::ggplot(rs |> mutate(ticker = factor(ticker, ord))) +
+  ggplot2::geom_segment(ggplot2::aes(x = tb21, xend = tb26, y = ticker, yend = ticker), colour = GRID, linewidth = 0.8) +
+  ggplot2::geom_point(ggplot2::aes(tb21, ticker), shape = 21, fill = "white", colour = INK2, size = 1.6) +
+  ggplot2::geom_point(ggplot2::aes(tb26, ticker), shape = 21, fill = "#08306b", colour = INK, size = 1.6) +
+  ggplot2::labs(x = "CDs plus brokered (% of interest-bearing deposits)", y = NULL, title = "Supporting chart 4: Rate-shopper share",
+                subtitle = paste0("Open = ", qlab(as.Date("2021-12-31")), ", filled = ", qlab(down_end))) + theme_classic_grid()
+sc5 <- pts(rs |> mutate(grp = MAIN_GROUPS[1]), "tb21", "up", paste0("CDs plus brokered, ", qlab(as.Date("2021-12-31")), " (% of IB deposits)"), "Up-cycle beta",
+           "Supporting chart 5: Starting share and beta", sub = "Beta, 2021Q4 to 2024Q3")
+patchwork::wrap_plots(dumb, sc5, nrow = 1)
+```
+\vspace{-0.3em}
+\footnotesize
+Chart 4 is the interest-bearing deposit make-up of the 15 regional banks, pro forma for deals. Chart 5 plots the start-of-hikes share against the up-cycle beta used in Table 1b; the dashed line is the fitted line.
+\normalsize
+
+\newpage
+
+\hypertarget{appB}{}
+## Appendix B: how the funding gap was financed (the accounting)
+
+Assets equal liabilities plus equity, and assets are loans plus securities plus goodwill plus cash and other assets. So the funding gap, the change in loans less the change in deposits, is exactly the sum of the changes in everything else on the balance sheet:
+
+**Loans $\Delta$ $-$ Deposits $\Delta$ = Equity $\Delta$ $-$ Goodwill $\Delta$ + Wholesale funding $\Delta$ $-$ Securities $\Delta$ $-$ Cash and other $\Delta$**
+
+Each $\Delta$ is the actual change on the balance sheet, in percentage points of starting deposits (2024Q3), pro forma for deals and summed over each firm's banks. Assets are subtracted because a book that grew used funding that would otherwise have been available to lend: Western Alliance's cash and other assets rose 7.0 points and its securities 6.3, so the gap is 2.0 $-$ 0.0 + 4.9 $-$ 6.3 $-$ 7.0 = -6.4: deposits grew faster than loans, and that excess, along with wholesale funding and equity, went into securities and cash. The five terms add up to the gap exactly. These are the columns of Table 1a.
+
+- **Equity** = total assets less total liabilities (RCFD2170 less RCFD2948), which is total equity capital including noncontrolling interests (RCFDG105). It is the balance-sheet equity of the banks, not of the holding company. Its change has four parts that we can separate: **retained earnings** (undivided profits and capital reserves, RCFD3632: net income less dividends paid up to the parent), **AOCI** (RCFDB530, mainly unrealized gains and losses on available-for-sale securities, which improved as rates fell), **paid-in capital** (preferred stock, common stock, surplus and other components, RCFD3838 + 3230 + 3839 + A130: new capital issued or injected by the parent, including stock issued in deals and pushed down to the bank) and **noncontrolling interests**.
+- **Goodwill** (RCFD3163) is shown on its own so that acquisition accounting is visible. Stock issued above an acquired bank's book value raises equity (paid-in capital) and goodwill together, with no bearing on how loans were funded. Fifth Third, Pinnacle, Huntington and PNC show the largest goodwill increases.
+- **Wholesale funding** = total liabilities less total deposits (RCFD2948 less RCON2200 + RCFN2200): FHLB advances, repo, federal funds purchased, subordinated and other borrowed money, and other liabilities.
+- **Securities** = held-to-maturity at amortized cost plus available-for-sale at fair value (RCFD1754 + RCFD1773). Fair-value changes on available-for-sale securities move this and AOCI by the same amount, so marks inflate both sides equally.
+- **Cash and other assets** = total assets less loans, securities and goodwill: cash and balances due, fed funds sold and reverse repos, trading assets, other intangibles, premises and other assets.
+
+```{r gapfin}
+gf <- readr::read_csv(p("data/analysis/gap_financing_by_bank.csv"), show_col_types = FALSE) |> arrange(desc(gap))   # R/build_gap_financing.R
+nf1b <- function(x) sub("^-0\\.0$", "0.0", nf(x, 1))
+gf <- gf |> mutate(c_cash = d_cash_other, c_sec = d_securities, c_whs = d_wholesale, c_good = d_goodwill, c_eq = d_equity)   # actual balance-sheet changes, as in Table 1a
+stopifnot(all(abs(gf$d_loans - gf$d_deposits - (gf$c_eq - gf$c_good + gf$c_whs - gf$c_sec - gf$c_cash)) < 0.01))
+mxA <- max(abs(unlist(gf[c("c_cash", "c_sec", "c_whs", "c_good", "c_eq")]))); mxB <- max(abs(unlist(gf[c("eq_retained", "eq_aoci", "eq_paid_in", "eq_noncontrolling")])))
+dE <- gf |> transmute(Bank = bank_cell(nm(ticker), ticker, unname(deal_mark[ticker]) |> tidyr::replace_na("")),
+  L = cell(nf1b(d_loans), pc(pctl(d_loans))), D = cell(nf1b(d_deposits), pc(pctl(-d_deposits))), Gap = cell(nf1b(d_loans - d_deposits), pc(pctl(d_loans - d_deposits))),
+  E = blue_abs(nf1b(c_eq), c_eq, mxA), G = blue_abs(nf1b(c_good), c_good, mxA), W = blue_abs(nf1b(c_whs), c_whs, mxA), S = blue_abs(nf1b(c_sec), c_sec, mxA), C = blue_abs(nf1b(c_cash), c_cash, mxA),
+  ER = blue_abs(nf1b(eq_retained), eq_retained, mxB), EA = blue_abs(nf1b(eq_aoci), eq_aoci, mxB), EP = blue_abs(nf1b(eq_paid_in), eq_paid_in, mxB), EN = blue_abs(nf1b(eq_noncontrolling), eq_noncontrolling, mxB))
+LE <- tbl_layout("l", list(rep("r", 3), rep("r", 5), rep("r", 4)))
+tE <- knitr::kable(dE, format = "latex", booktabs = TRUE, escape = FALSE, linesep = "", align = LE$align,
+  col.names = kableExtra::linebreak(c("Bank", "Loans $\\Delta$", "Deposits $\\Delta$", "Funding gap", "Equity $\\Delta$", "$-$ Goodwill $\\Delta$", "Wholesale\nfunding $\\Delta$", "$-$ Securities $\\Delta$", "$-$ Cash and other $\\Delta$",
+                                       "Retained\nearnings $\\Delta$", "AOCI $\\Delta$", "Paid-in\ncapital $\\Delta$", "Noncontrolling\ninterests $\\Delta$"), align = "c"),
+  label = "tE", caption = paste0("How the funding gap was financed, ", qlab(d0q), " to ", qlab(down_end), " (percentage points of starting deposits)")) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down"), font_size = 8.5) |>
+  kableExtra::row_spec(0, font_size = hdr_fs) |>
+  kableExtra::add_header_above(c(" " = 1, "Gap = Loans $\\Delta$ $-$ Deposits $\\Delta$" = 3, "Financed by (added or subtracted as the header shows)" = 5, "What the change in equity is made of" = 4), bold = TRUE, align = hdr_align(4), font_size = hdr_fs, escape = FALSE) |>
+  kableExtra::row_spec(seq_len(nrow(dE) - 1), extra_latex_after = "\\hdashline")
+knitr::asis_output(paste0("\\begingroup\\renewcommand{\\arraystretch}{0.9}\n", paste(tE, collapse = "\n"), "\n\\endgroup"))
+```
+\vspace{-0.3em}
+\footnotesize
+Funding gap = Loans $\Delta$ $-$ Deposits $\Delta$ = Equity $\Delta$ $-$ Goodwill $\Delta$ + Wholesale funding $\Delta$ $-$ Securities $\Delta$ $-$ Cash and other $\Delta$ (each $\Delta$ is the actual change; the header sign says whether it is added or subtracted); the four equity parts add up to Equity $\Delta$ (rounding aside). The contributions are shaded blue by size in either direction (darker = larger, one scale across the five columns; the equity parts have their own scale).
+\normalsize
+
+
+\newpage
+
+\hypertarget{appC}{}
+## Appendix C: calculation reference
+
+```{r appendix}
+calc <- tibble::tribble(
+  ~Metric, ~Calculation, ~`Items (MDRM / field)`, ~Source,
+  "Firm aggregation", "Bank-level dollars summed across each firm's current bank subsidiaries; every ratio recomputed from the sums (never averaged). Year-to-date changes add back banks merged in during 2026 (pro forma).", "Parent link RSSDHCR; merger history (change codes 221/223/224)", "FDIC BankFind API (institutions, history)",
+  "Deposit interest expense (quarterly)", "Sum of deposit interest items, converted from year-to-date to quarterly (Q1 = YTD; Qn = YTD(n) - YTD(n-1)); annualized x 365 / days in quarter.", "RIAD4508 (transaction), RIAD0093 (savings incl. MMDA), RIADHK03 (time <= $250K), RIADHK04 (time > $250K), RIAD4172 (foreign offices)", "FFIEC Call Report, Schedule RI",
+  "Cost of total deposits", "Annualized deposit interest expense / average of beginning- and end-of-quarter total deposits.", "RCON2200 + RCFN2200", "Call Report, Schedule RC",
+  "Cost of interest-bearing deposits", "Annualized deposit interest expense / average of beginning- and end-of-quarter interest-bearing deposits.", "RCON6636 + RCFN6636", "Call Report, Schedule RC",
+  "Beta (up-cycle and down-cycle)", "Change in cost of total deposits / change in quarterly-average effective fed funds rate. Up-cycle: 2021Q4-2024Q3; down-cycle: 2024Q3-2026Q2. Scored separately (higher = more rate-sensitive = more pressure).", "Effective fed funds rate (EFFR), daily, calendar-day weighted to quarters", "Call Report; NY Fed Markets API",
+  "NIB share of deposits", "Noninterest-bearing deposits / total deposits, quarter-end.", "(RCON6631 + RCFN6631) / (RCON2200 + RCFN2200)", "Call Report, Schedule RC",
+  "Time deposits (%)", "Time deposits (CDs and other fixed-term deposits: under $100K, $100-250K, over $250K; includes retirement and brokered CDs) / domestic deposits, quarter-end.", "(RCON6648 + RCONJ473 + RCONJ474) / RCON2200", "Call Report, Schedule RC-E",
+  "Uninsured (%)", "Estimated uninsured deposits / domestic deposits, over banks that report the estimate (small trust banks do not).", "RCON5597 / RCON2200", "Call Report, Schedule RC-O",
+  "Brokered deposits (%)", "Brokered deposits / domestic deposits, quarter-end (higher = more reliance on purchased, rate-sensitive funding).", "RCON2365 / RCON2200", "Call Report, Schedule RC-E",
+  "Loans / deposits (%)", "Total loans and leases net of unearned income / total deposits, quarter-end.", "RCFD2122 / (RCON2200 + RCFN2200); RCON versions if no foreign offices", "Call Report, Schedules RC-C, RC",
+  "Funding gap and its financing (Table 1a)", "(Change in loans less change in deposits) / starting deposits, 2024Q3 to 2026Q2, pro forma. Financed by the change in wholesale funding (liabilities less deposits), the change in equity (assets less liabilities), less the change in securities (HTM at amortized cost plus AFS at fair value), less the change in goodwill, less the change in cash and other assets (assets less loans less securities less goodwill), each over starting deposits; the five add up to the gap.", "RCFD2122; RCON2200 + RCFN2200; RCFD2948; RCFD2170; RCFD1754 + RCFD1773; RCFD3163", "Call Report, Schedules RC, RC-C, RC-B",
+  "Wholesale funding (%)", "100 - total deposits / total liabilities.", "1 - (RCON2200 + RCFN2200) / RCFD2948 (or RCON2948)", "Call Report, Schedule RC",
+  "Savings, MMDA + NOW (% of total)", "Built from the reported line items: interest-bearing transaction accounts (total transaction accounts less noninterest-bearing), money market, other savings and foreign-office interest-bearing deposits, over total deposits (Table 2). With noninterest-bearing and time deposits it sums to total deposits by accounting identity; R/build_deposit_panel.R checks this for every firm-quarter since 2021Q4 (largest gap 0.00001 percentage points of deposits) and the memo asserts it before Table 2 is drawn.", "(RCON2215 - RCON6631) + RCON6810 + RCON0352 + RCFN6636; with (RCON6631 + RCFN6631) and (RCON6648 + RCONJ473 + RCONJ474) = RCON2200 + RCFN2200", "Call Report, Schedules RC, RC-E",
+  "CDs due within 1 year (% of deposits)", "Time deposits with remaining maturity of one year or less ($250K or less, plus over $250K) / domestic deposits.", "(RCONHK11 + RCONK222) / RCON2200", "Call Report, Schedule RC-E",
+  "Rate paid on CDs (%)", "The average annual interest rate the bank pays on its CDs: annualized interest expense on time deposits divided by average time deposits (RC-K averages), 2026Q2, pro forma.", "(RIADHK03 + RIADHK04) / (RCONHK16 + RCONHK17)", "Call Report, Schedules RI, RC-K",
+  "FHLB advances (% of assets)", "Federal Home Loan Bank advances over all maturity and repricing buckets / total assets.", "(RCFDF055 + F056 + F057 + F058) / RCFD2170", "Call Report, Schedule RC-M",
+  "Cash (% of deposits)", "Cash and balances due from depository institutions / total deposits.", "RCFD0010 / (RCON2200 + RCFN2200)", "Call Report, Schedules RC-A, RC",
+  "Unpledged securities (% of deposits)", "(Held-to-maturity amortized cost + available-for-sale fair value - securities pledged at book value) / total deposits. Approximate, because pledged securities are at book value.", "(RCFD1754 + RCFD1773 - RCFD0416) / (RCON2200 + RCFN2200)", "Call Report, Schedules RC-B, RC",
+  "Securities loss (% of CET1)", "Fair value below amortized cost on held-to-maturity and available-for-sale securities, pre-tax / common equity tier 1 capital (bank-level, summed to the firm). RCFAP844 shows whether available-for-sale losses are excluded from capital.", "[(RCFD1771 - RCFD1754) + (RCFD1773 - RCFD1772)] / RCFAP859", "Call Report, Schedules RC-B, RC-R",
+  "Coverage of runoff pool (x)", "(Cash + unpledged securities) / (uninsured deposits + brokered deposits + CDs of $250K or less due within a year). A very rough estimate of liquid-asset coverage: it assumes the whole pool leaves and counts all cash and unpledged securities at book value, so it is neither a floor nor a ceiling.", "Items above; RCON5597, RCON2365, RCONHK11", "Call Report",
+  "YTD IB deposit growth (%)", "Interest-bearing deposits (total - noninterest-bearing) at 2026Q2 vs 2025Q4, pro forma for 2026 acquisitions.", "RCON2200 + RCFN2200 - RCON6631 - RCFN6631", "Call Report, Schedule RC",
+  "YTD change in deposit cost (bp)", "Cost of total deposits, 2026Q2 minus 2025Q4, pro forma.", "As above", "Call Report",
+  "Loan growth (YTD %)", "Total loans 2026Q2 vs 2025Q4, pro forma.", "RCFD2122 / RCON2122", "Call Report, Schedule RC-C",
+  "Market share, HHI, GSIB share", "Branch deposits by metro area (MSA; non-metro grouped by state), each branch capped at the 99th-percentile size; deposit-weighted across the firm's markets. HHI on each year's top holders. GSIB share = JPM + BAC + WFC + C.", "DEPSUMBR, MSABR, RSSDHCR, RSSDID", "FDIC Summary of Deposits (June 30)",
+  "Management tone", "Earnings-call commentary coded intensifying / stable / easing with a fixed rubric; Q1 and Q2 2026 calls.", "Public call transcripts", "Public call transcripts",
+  "GSIB placement (Chart 1a)", "The four universal GSIBs are placed on the regional scales without re-ranking the fifteen: funding gap computed as for the fifteen (pro forma); pricing score = average of the share of the fifteen with an equal or lower interest-bearing cost and an equal or lower CDs-plus-brokered share. Dashed lines are medians of the fifteen.", "Indicators above", "Author calculation",
+  "Pricing score", "Average percentile rank among the fifteen banks (100 = highest) of interest-bearing deposit cost against the peer median and of CDs plus brokered as a share of interest-bearing deposits, 0-100. Table 1a has no score: banks are ordered by the funding gap.", "Indicators above", "Author calculation",
+)
+knitr::kable(calc, format = "latex", booktabs = TRUE, longtable = TRUE, linesep = "\\addlinespace[2pt]",
+             caption = "Calculation reference") |>
+  kableExtra::kable_styling(latex_options = c("repeat_header"), font_size = 7) |>
+  kableExtra::column_spec(1, width = "2.6cm", bold = TRUE) |> kableExtra::column_spec(2, width = "7.2cm") |>
+  kableExtra::column_spec(3, width = "4.6cm") |> kableExtra::column_spec(4, width = "3.0cm")
+```
+
+\footnotesize
+**Data checks.** Deposit interest summed to the firm matches SEC-reported holding-company deposit interest within 2% in most quarters since 2022. Balance-sheet costs match management-reported figures (e.g. Truist 1.55%, First Citizens 2.07% in 2026) and M&T's and Regions' stated cutting-cycle betas. FDIC branch deposits reconcile to Call Report deposits (exact for 91% of bank-years). The Call Report's daily-average schedule (RC-K), which UBPR uses, is not used for costs: some banks classify zero-rate savings inconsistently between RC-K and the balance sheet, which understated costs for JPMorgan, Bank of America and M&T. Two-point balance averages add a few basis points of noise to single quarters.
+\normalsize
+
+```{r commentary-backpocket, include = FALSE}
+# Optional and private: if reports/bank_commentary_backpocket.Rmd exists it is knit here against the objects built above (the static result is
+# reports/bank_commentary_backpocket.md). It is not part of the published project; without it this chunk does nothing, and an error in it never stops the memo.
+bp <- p("reports/bank_commentary_backpocket.Rmd")
+if (file.exists(bp)) try(knitr::knit(bp, output = sub("\\.Rmd$", ".md", bp), envir = globalenv(), quiet = TRUE), silent = TRUE)
+```

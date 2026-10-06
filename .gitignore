@@ -1,0 +1,32 @@
+# Data are not versioned: rebuild everything with `Rscript R/run_all.R`
+data/*
+!data/reference/
+data/reference/*
+!data/reference/mgmt_guidance_summary_2026Q2.csv
+
+# Local reference material, not published
+archive/
+agent_metadata/
+reports/STUDY_NOTES_deposit_pressure.md
+reports/BULLET_CACHE_deposit_pressure.md
+reports/bank_commentary_backpocket.*
+reports/*.png
+
+# Exhibit scripts that are not part of the memo build
+R/build_h8_growth.R
+R/build_price_setting_series.R
+R/build_mix_vs_beta_panels.R
+
+# Node dependencies for a deck builder (not part of this project)
+node_modules/
+
+# LaTeX / R / OS scratch
+*.log
+*.aux
+*.tex
+reports/*_files/
+reports/*.knit.md
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store

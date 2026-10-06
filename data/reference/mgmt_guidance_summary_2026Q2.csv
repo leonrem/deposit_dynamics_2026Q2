@@ -1,0 +1,16 @@
+ticker,tone_q1,tone_q2,nii_guide_q2,guide_change_q2,rate_path_q2,mgmt_ib_cost_change_q2_bp,mgmt_cum_ib_beta_q2,source_note
+PNC,intensifying,intensifying,FY26 NII +15-15.5%,raised,Fed on hold through 2026,-5,,IB rate paid -5bp to 1.91% (incl. FirstBank); 'drifting back up to first quarter levels'
+USB,stable,stable,FY26 NII 'north of 5%',raised slightly,Not specified; notes talk of hikes,2,,Deposit rate up 'a couple basis points'
+TFC,intensifying,intensifying,FY26 NII +1-1.5%,lowered (2nd time),Not stated,1,45,"Cumulative IB beta 45% since 2Q24; expects higher rate paid, less favorable mix"
+FITB,stable,intensifying,FY26 NII $8.74-8.80B (incl. Comerica),raised slightly,Forward curve: +25bp hike in Sept,-2,,IB deposit costs -2bp; total -4bp to 1.54%
+HBAN,stable,intensifying,FY26 NII at or below bottom of range,lowered (soft),Market shift to 1-2 hikes,6,,Deposit costs +6bp (about 1bp from full-quarter Cadence)
+CFG,stable,intensifying,FY26 NII above guidance range,raised,Fed on hold,4,48,IB deposit costs +4bp; cumulative IB beta 48%
+RF,stable,stable,FY26 NII +2.5-4%,unchanged,Constant fed funds,-3,37,IB deposit cost -3bp to 1.69%; cumulative IB beta 37%
+MTB,stable,intensifying,FY26 NII lower half of $7.20-7.35B,lowered (soft),Planned for cuts; hike ~neutral,-2,56,IB deposit cost -2bp to 1.95%; cumulative beta 56%
+KEY,stable,intensifying,FY26 NII +9-11%,raised,Holds incl. a Fed hike,,56,Total deposit cost -2bp to 1.63%; cumulative IB beta 56%
+FCNCA,intensifying,intensifying,FY26 NII $6.60-6.75B (midpoint held),unchanged,0-1 hike (Fed funds to 4%),,,Total deposit cost 2.07%; 'modest increases in funding costs' expected
+ZION,stable,intensifying,"NTM NII 'moderately increasing'; upper single digits if hike, about 4-6% without",unchanged,Forward curve assumed a hike over the next 12 months,0,,Total deposit cost flat at 1.48%; campaigns near wholesale rates; IB growing faster than NIB
+PNFP,stable,stable,FY26 NIM 3.44-3.47% (tempered from ~3.5%); loan and deposit growth ranges maintained,NIM tempered; revenue guide unchanged,Forward path per market expectations (Q1 statement),1,,Total deposit cost +1bp; 'we don't compete on price'; relationship bank; incremental growth costs more
+WAL,stable,stable,FY26 NII +12-14% (25bp September hike assumed),raised slightly (11-14% -> 12-14%),25bp hike in September,-1,,IB deposit cost -1bp to 2.74%; $3B deposit optimization (shedding higher-cost deposits); deposit growth outlook cut to $6B
+FHN,intensifying,intensifying,Q2 NII $679M TE; NIM 3.49%; formal FY NII guide not captured,not captured,Flat-to-up rate expectation,5,66,IB deposit rate up to 2.33% from 2.28%; cumulative beta 66% since 9/2024; competition expected to peak in Q3-Q4
+EWBC,intensifying,intensifying,FY26 NII +7-9% (loans +6-8%),raised (6-8% -> 7-9%),Modestly asset sensitive; analysts assume a hike,,,Q3 CD roll-off $13B priced at 3.60-3.75%; pricing below top of market; 'deposit pricing pressure continues to build' (Q1)
